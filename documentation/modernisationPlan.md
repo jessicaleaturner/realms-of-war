@@ -16,38 +16,69 @@ The plan is ordered so every phase leaves the app in a working state and can shi
 
 - **Firebase is used for sign-in only.** Firebase Authentication handles usernames, emails and passwords. The original design added Firestore as a layer between the Firebase account and the player data in MongoDB. That layer is gone: the Firebase user ID now links the account directly to the player document in MongoDB, which holds all game data such as inventory, units and gold.
 - **Players are identified by a `uuid` field, not `firebase_token`.** The old name was misleading, because it held the Firebase user ID, not a token. `uuid` holds the Firebase Auth user ID (`user.uid`), so a signed-in user maps directly to their player document. `src/data/mockUsers.json` already uses this shape.
+- **The client is split into services and components.** Auth and data fetching no longer render UI, and UI code no longer talks to Firebase. Components build elements with DOM methods instead of `innerHTML` strings, so player data such as usernames can't inject HTML.
 - **The server moves to TypeScript.** Express works well with TypeScript, and Node 26 can run `.ts` files directly, so the server needs no build step.
 - **Tests sit next to the code they test** (`eventController.ts` and `eventController.test.ts` in the same folder). Every module gets tests.
 
 **Still outstanding from Phases 1 and 2** (folded into the phases below)
 
-- The players table is still closed with `</table` (missing `>`), and the View and Attack buttons still use `onclick='#(...)'` placeholders.
+- The players table is still closed with `</table` (missing `>`), and the View and Attack buttons still use `onclick='#(...)'` placeholders. Both go away in Phase 3.
 - The event handlers other than `deleteEvent` are still stubs that only `console.log`.
 
-## Phase 3: Switch players to `uuid` (S)
+## Phase 3: Restructure the client (S to M)
 
-Sign-up is currently half broken. After Firebase creates the account, `auth.js` calls `newUserData.slice()`, but `newUserData` is defined in `profile.js` and never exported. It's also an object, so it has no `slice()`. The error is swallowed by an empty `catch`, so the player document is never created in MongoDB. Fix this while renaming the field.
+`auth.js` currently does four jobs: it initialises Firebase, handles the sign-up, login and logout forms, fetches data, and renders the players and quests lists through `fillUsers` and `setupQuests`. `profile.js` and `questlog.js` build HTML strings and assign them to `innerHTML`, which runs any markup in a player's username (cross-site scripting). `index.js` is entirely commented out but is still loaded by `index.html`.
+
+Split the client so each file has one job:
+
+```
+client/
+  main.js              the only <script> tag; connects services to components
+  services/
+    firebase.js        fetches the config, initialises Firebase, wraps auth calls
+    api.js             replaces shared.js (getData, postData)
+  components/
+    Button.js
+    UserTable.js
+    QuestTable.js
+    SignupForm.js
+    LoginForm.js
+    LogoutButton.js
+```
+
+- **Services** don't touch the DOM. `firebase.js` exports `onAuthChange`, `signUp`, `signIn` and `signOut`. Firebase is initialised asynchronously from the `/firebase` config, so each export waits on an internal "ready" promise. Callers never see an uninitialised `auth`.
+- **Components** are functions that take data and callbacks and return an element, for example `UserTable(currentUser, users, { onAttack, onView })` or `SignupForm({ onSubmit })`. They don't import services, and they don't choose where they're mounted. They build elements with `createElement` and set player data with `textContent`, never `innerHTML`.
+- **`main.js`** is the only file that knows about both sides. It subscribes to auth changes, fetches data, mounts components (`container.replaceChildren(UserTable(...))`) and opens and closes the Materialize modals.
+- Imports use the full filename (`./Button.js`), because the browser resolves them without a bundler.
+- Delete `index.js`, `auth.js`, `profile.js`, `questlog.js` and `shared.js` once they're replaced, and change `index.html` to load only `main.js`.
+- Keep behaviour the same apart from the rendering bugs that this fixes by construction: the `</table` typo, the `onclick='#(...)'` placeholders and the signed-out `fillUsers(response.data)` call with its arguments in the wrong order. Sign-up stays broken until Phase 4.
+- Replacing Materialize is out of scope. It stays loaded as the global `M`.
+
+**Done when:** `index.html` loads one script, no client code assigns player data to `innerHTML`, no component imports a service, and the app behaves as it did before.
+
+## Phase 4: Switch players to `uuid` (S)
+
+Sign-up is currently half broken. After Firebase creates the account, the client calls `newUserData.slice()`, but `newUserData` is defined in `profile.js` and never exported. It's also an object, so it has no `slice()`. The error is swallowed by an empty `catch`, so the player document is never created in MongoDB. Phase 3 moves this code into `main.js` without fixing it. Fix it here while renaming the field.
 
 - In `userModel.js`, rename `firebase_token` to `uuid`, keep it `required` and make it `unique` with an index.
 - Rename the routes from `/user/:token` to `/user/:uuid`, and `getUserByToken` to `getUserByUuid`. Update every `{ firebase_token: ... }` query.
 - On the client:
-  - Export the new-player defaults from one place, set `uuid: auth.currentUser.uid` on sign-up, and post them to `/user`.
-  - Rename `sendDataByToken` to something accurate, such as `postData`.
-  - Compare players with `user.uuid !== currentUser.uid` in `fillUsers`. At the moment it compares `firebase_token` against a Firebase user object, which never matches.
-- Include `uuid` in the `/userDetails` response, because the View and Attack buttons need it to identify a player. Replace the `onclick='#(...)'` placeholders with real handlers, and fix the `</table` typo.
-- Fix the signed-out branch in `auth.js`, which calls `fillUsers(response.data)` with the arguments in the wrong order.
+  - Export the new-player defaults from one place, set `uuid` from the signed-in user's `uid` on sign-up, and post them to `/user`.
+  - Compare players with `user.uuid !== currentUser.uid` in `UserTable`. At the moment it compares `firebase_token` against a Firebase user object, which never matches.
+  - Pass `uuid` to the `onAttack` and `onView` callbacks.
+- Include `uuid` in the `/userDetails` response, because the View and Attack buttons need it to identify a player.
 - Remove `FIREBASE_DATABASE_URL` and `FIREBASE_STORAGE_BUCKET` from `fireBaseRoute.js` and `projectSetup.md`, because Realtime Database and Storage aren't used.
 - Add an optional `npm run database -- --mock-users` flag to `defaultDatabaseSetup.js` that seeds `mockUsers.json` for local development. Decide whether `mockUsers.json` is committed. It's currently untracked, and an earlier commit (`ae05dbc`) removed mock user data.
 - Existing documents created with `firebase_token` can be migrated with a one-off `updateMany` using `$rename`, or deleted if they're only test data.
 
 **Done when:** signing up creates a player document keyed by `uuid`, the players list hides the signed-in player, and nothing in the code refers to `firebase_token`.
 
-## Phase 4: Show errors to the player (S)
+## Phase 5: Show errors to the player (S)
 
-Firebase rejects bad sign-ups and logins (for example, a password under 6 characters), but `auth.js` has no `catch` on `createUserWithEmailAndPassword` or `signInWithEmailAndPassword`. The error only reaches the browser console, and the modal just sits there.
+Firebase rejects bad sign-ups and logins (for example, a password under 6 characters), but nothing catches the errors from `signUp` or `signIn`. The error only reaches the browser console, and the modal just sits there.
 
-- Add an error area to the sign-up and login modals, and keep the modal open when something fails.
-- Map Firebase error codes to plain messages in a small, testable function such as `client/scripts/authErrors.js`:
+- Give `SignupForm` and `LoginForm` an error area, and keep the modal open when something fails.
+- Map Firebase error codes to plain messages in a small, testable function in `client/services/authErrors.js`:
 
   | Code | Message |
   | --- | --- |
@@ -67,7 +98,7 @@ Firebase rejects bad sign-ups and logins (for example, a password under 6 charac
 
 **Done when:** each error in the table shows a readable message in the modal, and no API route returns an error with a 200 status.
 
-## Phase 5: Migrate the server to TypeScript (M)
+## Phase 6: Migrate the server to TypeScript (M)
 
 TypeScript works well with Express. Node 26 strips types natively, so `node --watch index.ts` runs TypeScript directly, with no Babel, `ts-node` or build step. Type stripping doesn't check types, so `tsc` runs separately as a check.
 
@@ -85,7 +116,7 @@ TypeScript works well with Express. Node 26 strips types natively, so `node --wa
 
 **Done when:** there are no `.js` files left in `src/`, `npm run typecheck` passes with `strict` on, and the app behaves as it did before.
 
-## Phase 6: Tests and CI (M)
+## Phase 7: Tests and CI (M)
 
 Every module gets a test file in the same folder, named after the file it tests:
 
@@ -110,10 +141,15 @@ src/
     userRoutes.ts
     userRoutes.test.ts
     ...
-client/scripts/
-  authErrors.js
-  authErrors.test.js
-  ...
+client/
+  services/
+    authErrors.js
+    authErrors.test.js
+    ...
+  components/
+    UserTable.js
+    UserTable.test.js
+    ...
 ```
 
 - Keep Node's built-in test runner (`node:test`) and `supertest`, which are already set up. Set the test script to an explicit glob so it only picks up colocated tests: `"test": "node --test \"**/*.test.ts\" \"client/**/*.test.js\""`.
@@ -124,14 +160,14 @@ client/scripts/
   - **Controllers:** each handler's success path, missing-record path (404) and validation path (400). `mockUsers.json` and `defaultQuests.json` work as fixtures.
   - **Routes:** each route is wired to the right handler and method, through `supertest`.
   - **Setup:** `setupDatabase` seeds quests once and doesn't duplicate them on a second run.
-  - **Client:** pure logic such as `authErrors.js` is tested directly. For the DOM rendering in `profile.js` and `questlog.js`, move the HTML-building code into functions that return strings and test those. Use `happy-dom` only if a test really needs a DOM.
+  - **Client:** pure logic such as `authErrors.js` is tested directly. Components return elements and don't depend on the page, so test them with `happy-dom`: render with fixture data, then check the rows, the button callbacks and that a username containing HTML appears as text.
 - Turn on Node's built-in coverage reporting so gaps are visible.
 - Add a GitHub Actions workflow that runs `npm ci`, `npm run typecheck` and `npm test` on every pull request. Cache the `mongodb-memory-server` binary between runs.
 - Add a CI status badge to the README.
 
 **Done when:** every source file has a matching test file, and pull requests run type checks and tests automatically and fail on regressions.
 
-## Phase 7: Auth and API hardening (M)
+## Phase 8: Auth and API hardening (M)
 
 The API currently trusts whatever `uuid` is in the URL, and `PUT /user/:uuid` writes the request body straight into the document.
 
@@ -145,7 +181,7 @@ The API currently trusts whatever `uuid` is in the URL, and `PUT /user/:uuid` wr
 
 **Done when:** a request without a valid token can't read private data or change any player, and tests prove it.
 
-## Phase 8: Finish one vertical slice (L)
+## Phase 9: Finish one vertical slice (L)
 
 A working "start a quest" loop is more convincing than many half-built features.
 
@@ -157,7 +193,7 @@ A working "start a quest" loop is more convincing than many half-built features.
 
 **Done when:** a new player can sign up, take a quest and see their gold, experience and action points change.
 
-## Phase 9: Deploy (S to M)
+## Phase 10: Deploy (S to M)
 
 - Host the API and static client on a free or low-cost platform (Render, Fly.io and Railway are all options) with MongoDB Atlas.
 - Keep all secrets in the host's environment settings, including the Firebase Admin service account. Rotate any credentials that were ever committed or logged.
@@ -167,11 +203,12 @@ A working "start a quest" loop is more convincing than many half-built features.
 
 ## Suggested order and pull requests
 
-1. Phase 3 as one PR. It fixes sign-up, so do it first.
-2. Phase 4 as one PR, or two if you want to split the client messages from the server status codes.
-3. Phase 5 as one PR per folder, or one PR with a commit per folder.
-4. Phase 6. The test setup and CI can go in first, followed by tests folder by folder.
-5. Phase 7, then Phase 8, then Phase 9.
+1. Phase 3 as one PR, client only. It comes first because Phases 4 and 5 both change sign-up and the players list. Doing them after the restructure means they edit the new files once, instead of editing `auth.js` and `profile.js` only for those files to be deleted.
+2. Phase 4 as one PR. It fixes sign-up.
+3. Phase 5 as one PR, or two if you want to split the client messages from the server status codes.
+4. Phase 6 as one PR per folder, or one PR with a commit per folder.
+5. Phase 7. The test setup and CI can go in first, followed by tests folder by folder.
+6. Phase 8, then Phase 9, then Phase 10.
 
 TypeScript comes before tests so tests are only written once, in TypeScript. The server is small enough that the risk of migrating without tests is low, and `tsc` catches most mistakes a rename would introduce.
 
