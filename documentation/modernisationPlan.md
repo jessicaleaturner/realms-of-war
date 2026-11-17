@@ -17,6 +17,7 @@ The plan is ordered so every phase leaves the app in a working state and can shi
 - **Firebase is used for sign-in only.** Firebase Authentication handles usernames, emails and passwords. The original design added Firestore as a layer between the Firebase account and the player data in MongoDB. That layer is gone: the Firebase user ID now links the account directly to the player document in MongoDB, which holds all game data such as inventory, units and gold.
 - **Players are identified by a `uuid` field, not `firebase_token`.** The old name was misleading, because it held the Firebase user ID, not a token. `uuid` holds the Firebase Auth user ID (`user.uid`), so a signed-in user maps directly to their player document. `src/data/mockUsers.json` already uses this shape.
 - **The client is split into services and components.** Auth and data fetching no longer render UI, and UI code no longer talks to Firebase. Components build elements with DOM methods instead of `innerHTML` strings, so player data such as usernames can't inject HTML.
+- **Materialize is replaced with native HTML and the project's own CSS, not another framework.** Materialize 1.0.0 is unmaintained, and Pico CSS, the obvious lightweight replacement, was archived in October 2026. The app only needs a few styled elements and two widgets that browsers now provide natively (`<dialog>` and `<details>`), so a single hand-written stylesheet is less to maintain than any dependency.
 - **The server moves to TypeScript.** Express works well with TypeScript, and Node 26 can run `.ts` files directly, so the server needs no build step.
 - **Tests sit next to the code they test** (`eventController.ts` and `eventController.test.ts` in the same folder). Every module gets tests.
 
@@ -51,12 +52,29 @@ client/
 - **`main.js`** is the only file that knows about both sides. It subscribes to auth changes, fetches data, mounts components (`container.replaceChildren(UserTable(...))`) and opens and closes the Materialize modals.
 - Imports use the full filename (`./Button.js`), because the browser resolves them without a bundler.
 - Delete `index.js`, `auth.js`, `profile.js`, `questlog.js` and `shared.js` once they're replaced, and change `index.html` to load only `main.js`.
-- Keep behaviour the same apart from the rendering bugs that this fixes by construction: the `</table` typo, the `onclick='#(...)'` placeholders and the signed-out `fillUsers(response.data)` call with its arguments in the wrong order. Sign-up stays broken until Phase 4.
-- Replacing Materialize is out of scope. It stays loaded as the global `M`.
+- Keep behaviour the same apart from the rendering bugs that this fixes by construction: the `</table` typo, the `onclick='#(...)'` placeholders and the signed-out `fillUsers(response.data)` call with its arguments in the wrong order. Sign-up stays broken until Phase 5.
+- Keep Materialize for now. It stays loaded as the global `M` and is removed in Phase 4.
 
 **Done when:** `index.html` loads one script, no client code assigns player data to `innerHTML`, no component imports a service, and the app behaves as it did before.
 
-## Phase 4: Switch players to `uuid` (S)
+## Phase 4: Replace Materialize with native elements and own CSS (S to M)
+
+Materialize 1.0.0 is no longer maintained. The app uses little of it: button, colour and form-field classes, one navbar, and two JavaScript widgets, `M.Modal` (five modals) and `M.Collapsible` (four panels). Browsers now provide both widgets natively, so Materialize can be removed entirely rather than swapped for another framework that could also be abandoned.
+
+- Replace the modals with `<dialog>`. `main.js` calls `dialog.showModal()` and `dialog.close()` instead of `M.Modal.getInstance(...)`. The browser provides the backdrop, closing with Esc, and focus handling. Buttons that open a modal get a click handler instead of the `modal-trigger` class and `data-target` attribute.
+- Materialize modals also close when the backdrop is clicked, but `<dialog>` doesn't by default. Add `closedby="any"` to each dialog, with a small backdrop click handler as a fallback for browsers that don't support it yet.
+- Replace the collapsibles with `<details>` and `<summary>`, which need no JavaScript.
+- Add one stylesheet, `client/styles.css`:
+  - Custom properties for colours, spacing and corner radius at the top (for example `--colour-primary`), so the look can be changed in one place.
+  - Styles on elements rather than classes where possible: `button`, `input`, `label`, `table`, `nav`, `dialog`, `details` and `summary`. Components then need few or no class names, so `Button` no longer sets a class string.
+  - A simple layout with grid or flexbox that works at phone width.
+  - Visible `:focus-visible` styles, so the forms and buttons work with a keyboard.
+- Delete `materialize.min.css` and `materialize.min.js`, remove their tags from `index.html`, and remove every Materialize class (`btn`, `z-depth-0`, `lighten-2`, `input-field`, `collapsible-header` and so on).
+- Copying Materialize's look exactly isn't the goal. Keep the layout recognisable and the colours close to the current blue.
+
+**Done when:** nothing references `M` or a Materialize class, the Materialize files are deleted, every modal and panel opens and closes with both mouse and keyboard, and the page works at phone width.
+
+## Phase 5: Switch players to `uuid` (S)
 
 Sign-up is currently half broken. After Firebase creates the account, the client calls `newUserData.slice()`, but `newUserData` is defined in `profile.js` and never exported. It's also an object, so it has no `slice()`. The error is swallowed by an empty `catch`, so the player document is never created in MongoDB. Phase 3 moves this code into `main.js` without fixing it. Fix it here while renaming the field.
 
@@ -73,7 +91,7 @@ Sign-up is currently half broken. After Firebase creates the account, the client
 
 **Done when:** signing up creates a player document keyed by `uuid`, the players list hides the signed-in player, and nothing in the code refers to `firebase_token`.
 
-## Phase 5: Show errors to the player (S)
+## Phase 6: Show errors to the player (S)
 
 Firebase rejects bad sign-ups and logins (for example, a password under 6 characters), but nothing catches the errors from `signUp` or `signIn`. The error only reaches the browser console, and the modal just sits there.
 
@@ -98,7 +116,7 @@ Firebase rejects bad sign-ups and logins (for example, a password under 6 charac
 
 **Done when:** each error in the table shows a readable message in the modal, and no API route returns an error with a 200 status.
 
-## Phase 6: Migrate the server to TypeScript (M)
+## Phase 7: Migrate the server to TypeScript (M)
 
 TypeScript works well with Express. Node 26 strips types natively, so `node --watch index.ts` runs TypeScript directly, with no Babel, `ts-node` or build step. Type stripping doesn't check types, so `tsc` runs separately as a check.
 
@@ -116,7 +134,7 @@ TypeScript works well with Express. Node 26 strips types natively, so `node --wa
 
 **Done when:** there are no `.js` files left in `src/`, `npm run typecheck` passes with `strict` on, and the app behaves as it did before.
 
-## Phase 7: Tests and CI (M)
+## Phase 8: Tests and CI (M)
 
 Every module gets a test file in the same folder, named after the file it tests:
 
@@ -167,7 +185,7 @@ client/
 
 **Done when:** every source file has a matching test file, and pull requests run type checks and tests automatically and fail on regressions.
 
-## Phase 8: Auth and API hardening (M)
+## Phase 9: Auth and API hardening (M)
 
 The API currently trusts whatever `uuid` is in the URL, and `PUT /user/:uuid` writes the request body straight into the document.
 
@@ -181,7 +199,7 @@ The API currently trusts whatever `uuid` is in the URL, and `PUT /user/:uuid` wr
 
 **Done when:** a request without a valid token can't read private data or change any player, and tests prove it.
 
-## Phase 9: Finish one vertical slice (L)
+## Phase 10: Finish one vertical slice (L)
 
 A working "start a quest" loop is more convincing than many half-built features.
 
@@ -193,7 +211,7 @@ A working "start a quest" loop is more convincing than many half-built features.
 
 **Done when:** a new player can sign up, take a quest and see their gold, experience and action points change.
 
-## Phase 10: Deploy (S to M)
+## Phase 11: Deploy (S to M)
 
 - Host the API and static client on a free or low-cost platform (Render, Fly.io and Railway are all options) with MongoDB Atlas.
 - Keep all secrets in the host's environment settings, including the Firebase Admin service account. Rotate any credentials that were ever committed or logged.
@@ -203,12 +221,13 @@ A working "start a quest" loop is more convincing than many half-built features.
 
 ## Suggested order and pull requests
 
-1. Phase 3 as one PR, client only. It comes first because Phases 4 and 5 both change sign-up and the players list. Doing them after the restructure means they edit the new files once, instead of editing `auth.js` and `profile.js` only for those files to be deleted.
-2. Phase 4 as one PR. It fixes sign-up.
-3. Phase 5 as one PR, or two if you want to split the client messages from the server status codes.
-4. Phase 6 as one PR per folder, or one PR with a commit per folder.
-5. Phase 7. The test setup and CI can go in first, followed by tests folder by folder.
-6. Phase 8, then Phase 9, then Phase 10.
+1. Phase 3 as one PR, client only. It comes first because Phases 4, 5 and 6 all change sign-up and the players list. Doing them after the restructure means they edit the new files once, instead of editing `auth.js` and `profile.js` only for those files to be deleted.
+2. Phase 4 as one PR. After the restructure, the markup lives in a few small component files, so the styling change is contained. It's kept separate from Phase 3 so that one PR changes structure without changing the look, and the other changes the look without changing behaviour. Nothing later depends on it, so it can move after Phase 5 if fixing sign-up feels more urgent.
+3. Phase 5 as one PR. It fixes sign-up.
+4. Phase 6 as one PR, or two if you want to split the client messages from the server status codes.
+5. Phase 7 as one PR per folder, or one PR with a commit per folder.
+6. Phase 8. The test setup and CI can go in first, followed by tests folder by folder.
+7. Phase 9, then Phase 10, then Phase 11.
 
 TypeScript comes before tests so tests are only written once, in TypeScript. The server is small enough that the risk of migrating without tests is low, and `tsc` catches most mistakes a rename would introduce.
 
